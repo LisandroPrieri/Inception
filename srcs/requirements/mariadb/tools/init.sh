@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+mkdir -p /run/mysqld && chown mysql /run/mysqld
+
 # First run only: the data directory has no 'mysql' system db yet
 if [ ! -d "/var/lib/mysql/mysql" ]; then
     mysql_install_db --user=mysql --datadir=/var/lib/mysql
@@ -22,4 +24,4 @@ EOF
 fi
 
 # Become the real server, in the foreground, as PID 1's job
-exec mysqld_safe --datadir=/var/lib/mysql
+exec mariadbd --user=mysql --datadir=/var/lib/mysql
