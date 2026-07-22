@@ -1,16 +1,21 @@
 services:
   mariadb:
     build: ./requirements/mariadb
+    image: mariadb
     container_name: mariadb
     env_file: .env
     networks:
       - inception
     volumes:
       - db_data:/var/lib/mysql
+    secrets:
+      - db_password
+      - db_root_password
     restart: always
 
   wordpress:
     build: ./requirements/wordpress
+    image: wordpress
     container_name: wordpress
     env_file: .env
     depends_on:
@@ -19,10 +24,14 @@ services:
       - inception
     volumes:
       - wp_data:/var/www/html
+    secrets:
+      - db_password
+      - credentials
     restart: always
 
   nginx:
     build: ./requirements/nginx
+    image: nginx
     container_name: nginx
     env_file: .env
     depends_on:
@@ -52,3 +61,11 @@ volumes:
       type: none
       o: bind
       device: /home/lprieri/data/wordpress
+
+secrets:
+  db_password:
+    file: ../secrets/db_password.txt
+  db_root_password:
+    file: ../secrets/db_root_password.txt
+  credentials:
+    file: ../secrets/credentials.txt
