@@ -245,3 +245,87 @@ I asked for `php-mysql`. That package declares "I need a PHP interpreter to plug
 **Fix:** name `php-cli` explicitly. The image doesn't grow by a single byte — apt sees it's already satisfied and does nothing. What changes is that the Dockerfile now *states* the dependency instead of inheriting it by luck.
 
 The general habit: **depend on things explicitly; never rely on what happens to arrive as a side effect.**
+
+---
+
+## Who you are to MariaDB: host patterns and socket auth
+
+This one cost me a debugging session, so it's worth writing down properly. It comes down to a single idea: MariaDB's notion of *identity* is richer than "a username and a password," and both halves of that surprised me.
+
+### An account is a pair, not a name
+
+`'wp_user'@'localhost'` and `'wp_user'@'%'` are **two different accounts**. Same username, separate passwords, separate privileges, and creating one tells you nothing about the other. The host half is a pattern describing *where the connection may come from*; `%` is the SQL wildcard for "anywhere."
+
+That's why `init.sh` creates the WordPress user as `'${MYSQL_USER}'@'%'` — WordPress connects from a *different container*, so from MariaDB's point of view it arrives from a foreign IP on the bridge network, not from localhost. This is the account-level twin of the `bind-address` fix in `50-server.cnf`: one is the server refusing to **listen** beyond localhost, the other is an account refusing to be **used** from beyond it. Both have to be solved or WordPress can't connect.
+
+### Matching is by specificity — and that's what bit me
+
+When a login arrives, MariaDB does not scan for the first account that fits. It picks the **most specific host pattern** that matches, and then checks the password against *that* account only. A literal `localhost` is more specific than the wildcard `%`, so it wins.
+
+The trap: `mysql_install_db` leaves behind two **anonymous accounts** — empty username, no password — at `''@'localhost'` and `''@'<container hostname>'`. So this happened:
+
+```
+$ docker exec mariadb mysql -u wp_user -p<correct password>
+ERROR 1045 (28000): Access denied for user 'wp_user'@'localhost'
+```
+
+Correct password, account exists, and still denied. My connection came from inside the container, so it matched the anonymous `localhost` entry — which has *no* password — before it ever reached `'wp_user'@'%'`. Adding `-h 127.0.0.1` doesn't help: the client still reports the host as `localhost`.
+
+What made this genuinely nasty is that **WordPress was never affected**. It connects from another container, whose IP matches `%` and not `localhost`, so the application worked perfectly while the documented manual test failed. A bug invisible in normal use and visible only when testing by hand is the kind that survives all the way to evaluation.
+
+Fix, in the init SQL — the same thing `mysql_secure_installation` does, except that tool is interactive and can't run unattended:
+
+```sql
+DELETE FROM mysql.global_priv WHERE user='';
+```
+
+Bonus insight: this retroactively justifies `FLUSH PRIVILEGES`. `CREATE USER`, `GRANT` and `ALTER USER` all update the in-memory grant tables themselves, so the statement is usually ceremonial — but a direct `DELETE` on a grant table is exactly the case that *needs* an explicit reload.
+
+### Socket auth: proving identity without a secret
+
+The other half. There are two ways to reach the server:
+
+| Transport | What the server sees |
+|---|---|
+| **TCP** (`host:3306`) | an IP address, nothing more — so it must demand a password |
+| **Unix domain socket** (`/run/mysqld/mysqld.sock`) | a *file* on the local filesystem; only same-machine processes can open it |
+
+The socket has a property TCP cannot have: both ends are processes on the **same kernel**, so the kernel already knows the client's OS user ID and will report it to the server on request. The client never transmits that ID and therefore cannot lie about it. There's no secret involved, so there's nothing to steal, forge, or replay.
+
+The `unix_socket` plugin is just that: *ask the kernel which OS user is on the other end, and allow the login if that name matches the MariaDB username being requested.* OS `root` may log in as MariaDB `root`, no password.
+
+A fresh install stores a **list of alternatives** for root, not a single method:
+
+```
+"auth_or": [ {}, { "plugin": "unix_socket" } ]
+```
+
+Verified in a throwaway container — three attempts, none of them supplying a password:
+
+| Attempt | Result |
+|---|---|
+| `mysql -u root` as OS **root**, over the socket | `root@localhost` — in |
+| `mysql -u root` as OS user **mysql**, over the socket | `ERROR 1698 Access denied` |
+| `mysql -u root -h 127.0.0.1` as OS **root**, over TCP | `ERROR 1698 Access denied` |
+
+Identical command every time. The only things that changed were *which OS user ran it* and *which transport it used* — which is precisely the point.
+
+### Why `init.sh` leans on it, and where it stops
+
+Both `mysqladmin ping --silent` and `mysql -u root <<-EOF` run as OS root inside the container over the socket, which is why neither needs credentials. That isn't laziness: it means **no password ever appears on a command line** during setup, where it would be visible to anything running `ps` inside the container.
+
+Then the setup SQL ends this arrangement:
+
+```sql
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${DB_ROOT_PASSWORD}';
+```
+
+and the alternatives collapse to one — the `unix_socket` entry is gone:
+
+```
+"auth_or": [ {} ]
+```
+
+Which is exactly why the *very next line* of the script suddenly needs `-p"${DB_ROOT_PASSWORD}"` to shut the server down. The authentication rules change halfway through the script, and that's the one detail I'd want to be able to explain on demand.
+
+**The trade-off I'm accepting:** socket auth is arguably the *stronger* of the two here — nothing leaks into `docker inspect`, no hash to crack, and it cannot be used over the network at all. The subject wants a root password, so we set one, but the cost is that root becomes reachable by password alone and loses the socket route. MariaDB can keep both (`IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD(...)`), which is what production setups often do.
