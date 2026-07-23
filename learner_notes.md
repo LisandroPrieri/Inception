@@ -329,3 +329,34 @@ and the alternatives collapse to one — the `unix_socket` entry is gone:
 Which is exactly why the *very next line* of the script suddenly needs `-p"${DB_ROOT_PASSWORD}"` to shut the server down. The authentication rules change halfway through the script, and that's the one detail I'd want to be able to explain on demand.
 
 **The trade-off I'm accepting:** socket auth is arguably the *stronger* of the two here — nothing leaks into `docker inspect`, no hash to crack, and it cannot be used over the network at all. The subject wants a root password, so we set one, but the cost is that root becomes reachable by password alone and loses the socket route. MariaDB can keep both (`IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD(...)`), which is what production setups often do.
+
+---
+
+## Image names and tags: the `latest` that appears when you look away
+
+A full image reference is `name:tag`. The tag is a human label for a version or variant — `debian:bookworm`, `node:20`. Docker attaches no meaning to the string itself.
+
+The subject forbids the `latest` tag. I assumed that was about the base image, and `FROM debian:bookworm` handled it. It isn't only about that. A tag left off does **not** mean "no tag" — Docker silently fills in `:latest`:
+
+```yaml
+image: mariadb          # Docker reads this as mariadb:latest
+```
+
+So after `make`, `docker images` would show three images I built — `mariadb`, `wordpress`, `nginx` — all tagged `latest`, which is exactly what the rule prohibits. An evaluator runs `docker images`, sees `latest`, flags it. It's irrelevant that I built them locally rather than pulled them; the tag on disk is what's checked.
+
+The rule therefore has **two** enforcement points, at opposite ends of the build:
+
+| Where | Field | Fix |
+|---|---|---|
+| The image I build **from** | `FROM debian:bookworm` | pin the base tag ✓ |
+| The image I build **into** | `image:` in compose | give it an explicit tag |
+
+Fix — tag every built image explicitly:
+
+```yaml
+image: mariadb:inception
+```
+
+`inception` is arbitrary; any non-`latest` tag works. I use it because it's meaningful to a reader — it marks the image as *this project's* build, distinct from the official Docker Hub `mariadb` I'm forbidden to pull. The **name** (`mariadb`) is the constrained half: the subject requires it to match the service name.
+
+The general habit, again: **make the implicit explicit.** A missing tag is a decision Docker makes for me, and it makes the one the subject bans.
