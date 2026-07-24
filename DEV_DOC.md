@@ -5,7 +5,7 @@ How to set up, build, and operate the Inception stack from a clean machine. For 
 ## Prerequisites
 
 - A Linux virtual machine (this project targets Ubuntu under VirtualBox)
-- Docker Engine with the Compose plugin — `docker compose version` must work
+- Docker Engine with the Compose plugin (`docker compose version` must work)
 - Your user in the `docker` group: `sudo usermod -aG docker $USER`, then a full logout/login
 - `make` and `git`
 
@@ -21,7 +21,7 @@ How to set up, build, and operate the Inception stack from a clean machine. For 
 
    It holds only *non-secret* configuration: `DOMAIN_NAME`, `MYSQL_DATABASE`, `MYSQL_USER`, WordPress usernames and emails. No passwords go in this file.
 
-3. **Create the secret files** — a `secrets/` directory at the repo root, git-ignored, one password per file:
+3. **Create the secret files**: a `secrets/` directory at the repo root, git-ignored, one password per file:
 
    ```
    secrets/
@@ -50,10 +50,10 @@ The Makefile wraps Docker Compose (project name `inception`, compose file `srcs/
 | Target | What it does |
 |---|---|
 | `make` / `make up` | create `/home/lprieri/data/{mariadb,wordpress}`, then `docker compose up --build -d` |
-| `make down` | stop and remove containers and network — volumes and data survive |
+| `make down` | stop and remove containers and network; volumes and data survive |
 | `make logs` | `docker compose logs -f` |
 | `make fclean` | `down`, then `docker system prune -af` and delete `/home/lprieri/data` |
-| `make re` | `fclean` followed by a full rebuild — a from-scratch first boot |
+| `make re` | `fclean` followed by a full rebuild (a from-scratch first boot) |
 
 ## Managing containers and volumes
 
@@ -84,6 +84,6 @@ Two named volumes, declared in `docker-compose.yml`, their storage placed under 
 
 Persistence semantics:
 
-- **`make down` / container crash / rebuild** — data survives. Containers are disposable; volumes are not destroyed with them.
-- **`make fclean` / `make re`** — data is deliberately erased (`rm -rf /home/lprieri/data`).
-- **First boot vs restart** — both init scripts use the volume as their marker: MariaDB runs its database setup only if `/var/lib/mysql/mysql` doesn't exist; WordPress downloads core and installs the site only if `/var/www/html` is empty. A restart with existing data skips setup entirely, which is what makes the containers safe to destroy and recreate.
+- **`make down` / container crash / rebuild**: data survives. Containers are disposable; volumes are not destroyed with them.
+- **`make fclean` / `make re`**: data is deliberately erased (`rm -rf /home/lprieri/data`).
+- **First boot vs restart**: both init scripts use the volume as their marker. MariaDB runs its database setup only if `/var/lib/mysql/mysql` doesn't exist; WordPress downloads core and installs the site only if `/var/www/html` is empty. A restart with existing data skips setup entirely, which is what makes the containers safe to destroy and recreate.
