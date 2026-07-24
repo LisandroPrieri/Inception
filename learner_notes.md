@@ -360,3 +360,109 @@ image: mariadb:inception
 `inception` is arbitrary; any non-`latest` tag works. I use it because it's meaningful to a reader — it marks the image as *this project's* build, distinct from the official Docker Hub `mariadb` I'm forbidden to pull. The **name** (`mariadb`) is the constrained half: the subject requires it to match the service name.
 
 The general habit, again: **make the implicit explicit.** A missing tag is a decision Docker makes for me, and it makes the one the subject bans.
+
+---
+
+## The whole chain: one request, end to end
+
+Every arrow is a boundary I configured on purpose. Solid = a live network request; dotted = a filesystem mount.
+
+```mermaid
+flowchart TB
+    browser["Browser<br/>https://lprieri.42.fr"]
+
+    subgraph vm["VirtualBox VM — host user: lprieri"]
+        direction TB
+        subgraph net["Docker bridge network 'inception'"]
+            direction LR
+            nginx["nginx<br/>listen :443<br/>TLS 1.2 / 1.3<br/>self-signed cert"]
+            wp["wordpress<br/>php-fpm :9000"]
+            db["mariadb<br/>:3306"]
+        end
+
+        subgraph data["/home/lprieri/data — named volumes (survive 'make down')"]
+            wpfiles[("wp_data<br/>/var/www/html")]
+            dbfiles[("db_data<br/>/var/lib/mysql")]
+        end
+
+        secrets["secrets/*.txt<br/>mounted at /run/secrets/"]
+    end
+
+    browser -->|"HTTPS :443"| nginx
+    nginx -->|".php over FastCGI → :9000"| wp
+    wp -->|"SQL → :3306"| db
+
+    nginx -. "serves static files" .-> wpfiles
+    wp -. "reads / writes" .-> wpfiles
+    db -. "reads / writes" .-> dbfiles
+
+    secrets -. "db_password, credentials" .-> wp
+    secrets -. "db_password, db_root_password" .-> db
+```
+
+Three things the picture makes obvious, and that I should be able to say out loud:
+
+1. **One entrypoint.** Only nginx publishes a port (`443`). `wordpress:9000` and `mariadb:3306` are reachable *only* from inside the bridge network — no `ports:` entry, so neither the host nor the outside world can reach them.
+2. **The shared volume is load-bearing.** `wp_data` is mounted by **both** nginx and wordpress at `/var/www/html`. nginx names a file (`SCRIPT_FILENAME`); php-fpm opens it. That only works because it's literally the same directory in both containers.
+3. **Each cross-container hop repeats one lesson.** `fastcgi_pass wordpress:9000` and `--dbhost=mariadb` are the same move as MariaDB's `bind-address 0.0.0.0` and php-fpm's `listen 9000`: a container boundary turns "same machine" into "over the network," resolved by Docker's DNS on the service name.
+
+---
+
+## Commands for the evaluation
+
+Grouped by what I need to *demonstrate*, not alphabetically. Each answers a question the evaluator actually asks.
+
+### The stack is real and correct
+```bash
+docker ps                 # 3 containers Up; only nginx maps :443 to the host
+docker images             # image names == service names; tags are :inception, never latest
+docker network ls         # the inception bridge network exists
+docker volume ls          # db_data and wp_data
+```
+
+### Prove the rules
+```bash
+# no password lives in an image's environment
+docker inspect wordpress | grep -i -A3 '"Env"'
+
+# two users, exactly one administrator; admin name has no "admin" substring
+docker exec wordpress wp user list --fields=user_login,roles --allow-root
+
+# the site works over TLS...
+curl -k https://lprieri.42.fr
+
+# ...but only TLS 1.2 / 1.3 — an older version is refused
+curl -k --tls-max 1.1 https://lprieri.42.fr        # should fail
+
+# the certificate is self-signed for the project domain
+echo | openssl s_client -connect 127.0.0.1:443 -servername lprieri.42.fr 2>/dev/null \
+    | openssl x509 -noout -subject -dates
+
+# 443 is the only door — port 80 is closed
+curl http://127.0.0.1:80/                          # should refuse
+```
+
+### Persistence and resilience (they will test these)
+```bash
+# a crashed container comes back on its own (restart: always)
+docker kill nginx ; sleep 2 ; docker ps            # nginx is Up again
+
+# data survives container destruction
+make down && make up                               # site + users still there afterwards
+
+# the hardest one: reboot the whole VM, then confirm the site is still up
+# (containers restart automatically, volumes persist on disk)
+```
+
+### Look inside
+```bash
+docker exec -it mariadb mariadb -u wp_user -p wordpress   # into the database
+docker logs nginx                                         # one service's logs
+make logs                                                 # all three, live
+```
+
+### Prove no secret is in the git repo (the instant-fail check)
+```bash
+git ls-files | grep -E '\.env$|secrets/'    # must print nothing
+git log --all -S 'my-password-value'        # must find no commit
+```

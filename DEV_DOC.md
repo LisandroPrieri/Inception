@@ -1,6 +1,6 @@
 # Developer Documentation
 
-How to set up, build, and operate the Inception stack from a clean machine. For end-user/administrator usage, see [USER_DOC.md](USER_DOC.md). Per-service deep dives: [srcs/requirements/mariadb/README.md](srcs/requirements/mariadb/README.md), [srcs/requirements/wordpress/README.md](srcs/requirements/wordpress/README.md).
+How to set up, build, and operate the Inception stack from a clean machine. For end-user/administrator usage, see [USER_DOC.md](USER_DOC.md). Per-service deep dives: [srcs/requirements/mariadb/README.md](srcs/requirements/mariadb/README.md), [srcs/requirements/wordpress/README.md](srcs/requirements/wordpress/README.md), [srcs/requirements/nginx/README.md](srcs/requirements/nginx/README.md).
 
 ## Prerequisites
 
@@ -34,6 +34,14 @@ How to set up, build, and operate the Inception stack from a clean machine. For 
    Compose mounts these into the containers at `/run/secrets/<name>`; the init scripts read them there at startup.
 
 4. **Launch:** `make`
+
+5. **Point the domain at the machine.** The site answers only to `lprieri.42.fr`, so map that name to the loopback address on whatever machine runs the browser (inside the VM, that's `127.0.0.1`). This appends one line to `/etc/hosts`:
+
+   ```
+   echo "127.0.0.1 lprieri.42.fr" | sudo tee -a /etc/hosts
+   ```
+
+   `tee` (rather than `echo ... >> /etc/hosts`) is needed because the redirection in `sudo echo ... >>` runs as your unprivileged shell and is denied; `sudo tee` does the privileged write. Then open **https://lprieri.42.fr** and accept the self-signed certificate warning.
 
 ## Building and launching
 
