@@ -113,3 +113,25 @@ Nothing above executes again. When `docker compose up` starts a container from t
 5. The sticky notes are read: cd to `/var/www/html`, run `init.sh` as PID 1
 
 **The rule that falls out: anything *used* at runtime must be *installed* at build time.** `init.sh` calls `mysqladmin ping` at runtime, so `mariadb-client` must be installed by the Dockerfile, even though no database exists or is reachable at build time. The build stocks the toolbox; runtime uses the tools. Installing at runtime instead would fail or hurt three ways: it needs the network and the apt index we deleted, anything installed would vanish with the container's writable layer, and startup would become slow and unreproducible.
+
+## The first-boot guard in `init.sh`
+
+```bash
+if ! wp core is-installed --allow-root; then
+```
+
+Setup must run exactly once per volume, so it needs a test for "has this already been done?" The subtlety is **what** to test.
+
+`wp core is-installed` queries the database for WordPress's own tables, so it tests the *goal*: is there an installed site? The obvious alternative, `[ ! -f wp-config.php ]`, tests the side effect of one intermediate step, and those come apart the moment a later step fails (see Issues below).
+
+Three details in that one line:
+
+- **No square brackets.** `[` is the `test` builtin, which compares strings and files; it cannot run a command. `if [ ! wp core is-installed ]` makes bash run `test` on five unrelated words, print `[: too many arguments`, and exit 2, which `if` reads as false: the block is skipped silently. `if ! cmd` branches on the *exit status of the command itself*, which is what's wanted here.
+- **`set -e` doesn't apply.** A command evaluated as an `if` condition is exempt from `set -e` by design, otherwise every false test would abort the script. That's why the broken form above fails quietly rather than killing the container.
+- **The readiness poll has to come first.** The guard asks the *database* a question, so it can only answer truthfully once the database is reachable. With the `until mariadb ...` loop above the `if`, an unreachable database is waited out; with the loop inside the block, a slow MariaDB would make `is-installed` exit non-zero for the wrong reason — "cannot connect" rather than "not installed" — and an already-installed site would be reinstalled, failing on `WordPress is already installed`. The order of those two blocks is load-bearing, not cosmetic.
+- **It self-heals.** A missing `wp-config.php`, and a config pointing at an empty schema, both make the command exit non-zero, so the block re-runs in every partial-failure state. `wp core download --force` and `wp config create --force` are what make that re-run safe: without `--force`, a leftover download aborts with `WordPress files seem to already be present here`.
+
+## Issues encountered
+
+- **Container `Up`, site never installed.** On a first boot, `wp core install` failed with `Error establishing a database connection`; `set -e` killed the container, `restart: always` restarted it, and the old `[ ! -f wp-config.php ]` guard was now false, so the whole install block was skipped and `exec php-fpm` ran regardless. The result passes every casual check: three containers `Up`, nginx serving, TLS fine, and a 302 to `/wp-admin/install.php` from a `wordpress` database with zero tables. Two fixes, one per cause: guard on `wp core is-installed` (above) so a partial install is detected and retried, and `--skip-networking` on MariaDB's temporary setup server (see the MariaDB README) so the readiness poll can no longer succeed against a server that is about to shut down.
+- **`Error: WordPress files seem to already be present here.`** A crash-looping container after a first boot that downloaded core but never wrote a config: `wp core download` refuses to run over an existing tree, `set -e` exits, `restart: always` tries again, forever. Fixed with `--force`, which makes the download idempotent, so a half-finished attempt is repaired instead of wedging the volume permanently.

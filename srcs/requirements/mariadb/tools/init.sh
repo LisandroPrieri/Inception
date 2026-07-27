@@ -20,7 +20,7 @@ if [ ! -d "/var/lib/mysql/mysql" ]; then
 
 	# Temporary server, backgrounded with '&' so the script keeps going.
 	# --user is required: mariadbd refuses to run as root unless told who to become.
-	mariadbd --user=mysql --datadir=/var/lib/mysql &
+	mariadbd --user=mysql --datadir=/var/lib/mysql --skip-networking &
 
 	# Wait for a condition, not a duration. No password needed yet: a fresh install
 	# authenticates root through the unix_socket plugin.

@@ -363,6 +363,115 @@ The general habit, again: **make the implicit explicit.** A missing tag is a dec
 
 ---
 
+## "Ready" is not one question: racing MariaDB's temporary server
+
+Two scripts that were each correct on their own combined into a site that served nothing. Worth writing down in full, because the failure was invisible in `docker ps`.
+
+### What was there before
+
+`mariadb/tools/init.sh` started its setup server on default settings, ran the grants, shut it down, then `exec`'d the real one:
+
+```bash
+mariadbd --user=mysql --datadir=/var/lib/mysql &
+```
+
+`wordpress/tools/init.sh` guarded its first-boot work on the config file, then polled for the database:
+
+```bash
+if [ ! -f wp-config.php ]; then
+    wp core download --allow-root
+    until mariadb -h mariadb -u"${MYSQL_USER}" -p"${DB_PASSWORD}" -e "SELECT 1" >/dev/null 2>&1; do
+        sleep 1
+    done
+```
+
+### The trouble
+
+```
+Success: WordPress downloaded.
+Success: Generated 'wp-config.php' file.
+Error: Error establishing a database connection.
+```
+
+Three steps in, the database vanished. The MariaDB log for the same boot:
+
+```
+10:23:36  Shutdown complete       <- temporary server going down
+10:23:37  ready for connections   <- real server coming up
+```
+
+**The poll answered the wrong question.** It asked "is something accepting connections at `mariadb:3306`?" — and during MariaDB's first boot the honest answer was *yes*, because the temporary setup server listens on TCP just like the real one. WordPress took that as the green light, wrote `wp-config.php`, and ran `wp core install` straight into the one-second gap between the two servers.
+
+A default `depends_on` doesn't help, and neither does a longer `sleep`: the container was up, the port was open, and the server behind it was about to disappear.
+
+### The failure that actually hurt
+
+`set -e` killed the container; `restart: always` brought it back. Now `[ ! -f wp-config.php ]` was **false**, so the entire install block was skipped and `exec php-fpm` ran anyway.
+
+The result is the nastiest state in the project so far:
+
+| Symptom | Reality |
+|---|---|
+| `docker ps` → `Up` | php-fpm is genuinely running |
+| nginx returns a page | a 302 to `/wp-admin/install.php` |
+| `SHOW TABLES FROM wordpress;` | **empty** |
+
+The container reported healthy indefinitely while serving a WordPress that had never been installed. Docker's liveness signal is "PID 1 is alive," which was true and completely useless.
+
+The general shape of the bug: **a guard that tests one step's side effect instead of the goal.** `wp-config.php` proves step 2 of 4 ran. If a later step dies, the guard lies — and it lies in the worst possible direction, toward "nothing left to do."
+
+### Why the new state fixes it
+
+**1. The temporary server stops being reachable at all.**
+
+```bash
+mariadbd --user=mysql --datadir=/var/lib/mysql --skip-networking &
+```
+
+`--skip-networking` binds no TCP port; the server exists only on its Unix socket. Every local setup step still works untouched, because `mysqladmin ping`, the heredoc and the shutdown all travel through `/run/mysqld/mysqld.sock`. But from another container there is now *nothing to connect to* for the whole init phase, so the poll gets connection refused and keeps waiting. The question "is there a server accepting TCP on `mariadb:3306`?" now has exactly one true answer, and it's the real server.
+
+That's the part worth defending out loud: the race is removed **by construction**, not by widening a timeout. A `sleep 10` would have made it rarer and left it in.
+
+**2. The guard moves to the goal.**
+
+```bash
+if ! wp core is-installed --allow-root; then
+```
+
+This asks the *database* whether the site exists, which is the actual end state. It self-heals from a partial failure: a missing `wp-config.php` or a config pointing at an empty schema both return non-zero, so the block re-runs. Adding `--force` to `wp core download` and `wp config create` makes that re-run idempotent instead of aborting on leftovers ("WordPress files seem to already be present here").
+
+**3. The readiness poll moves above the guard.** This one is easy to get wrong twice. Once the guard's answer comes from the database, the guard inherits the database's availability: a MariaDB that is merely slow makes `is-installed` exit non-zero for the reason it wasn't asking about, and an already-installed site gets reinstalled — `Error: WordPress is already installed`, `set -e`, crash. Polling first collapses that back to one meaning. The poll costs nothing when the database is already up, and the two blocks now read in the order they actually depend on each other, which is the only thing stopping a future tidy-up from folding the loop back inside the `if`.
+
+### The bash trap I hit while fixing it
+
+I first wrote the new guard as:
+
+```bash
+if [ ! wp core is-installed --allow-root ]; then     # broken
+```
+
+The brackets look harmless and break everything. `[` is **not syntax**; it's the `test` builtin (there is a real `/usr/bin/[` on disk). It compares strings and inspects files — it cannot run a command. Bash reads that line as `test` handed five unrelated words:
+
+```
+bash: [: too many arguments
+```
+
+`test` exits 2, `if` reads non-zero as false, and the block is skipped. Same silent-skip symptom I was trying to fix, from a different cause.
+
+| Form | What bash actually does |
+|---|---|
+| `if [ cmd args ]` | runs `test` with `cmd` and `args` as **strings** to compare |
+| `if cmd args` | runs `cmd`, branches on its **exit status** |
+| `if ! cmd args` | same, with the status negated |
+
+And `set -e` does not rescue this: a command evaluated as an `if` condition is explicitly exempt from it, otherwise every false test would kill the script. Two independent mechanisms for "fails quietly" met in one line.
+
+### The lesson, compressed
+
+**Poll for the condition you actually depend on, and guard on the goal rather than on a footprint of one step toward it.** Both halves of this bug were a check that was *nearly* right — a port that was open but about to close, a file that existed but proved too little.
+
+---
+
 ## The whole chain: one request, end to end
 
 Every arrow is a boundary I configured on purpose. Solid = a live network request; dotted = a filesystem mount.

@@ -9,22 +9,21 @@ DB_PASSWORD=$(cat /run/secrets/db_password)
 # php-fpm needs this runtime dir for its pid file; /run is wiped on every start.
 mkdir -p /run/php
 
-# First boot only: no wp-config.php means the volume is fresh.
-if [ ! -f wp-config.php ]; then
-	# Download WordPress core into the current dir (/var/www/html = the volume).
-	wp core download --allow-root
+# depends_on only waits for the mariadb container to START, not for the
+# database to accept connections. Poll with the DB client (the reason
+# mariadb-client is in the Dockerfile) until our user can run a query.
+until mariadb -h mariadb -u"${MYSQL_USER}" -p"${DB_PASSWORD}" \
+		-e "SELECT 1" >/dev/null 2>&1; do
+	sleep 1
+done
 
-	# depends_on only waits for the mariadb container to START, not for the
-	# database to accept connections. Poll with the DB client (the reason
-	# mariadb-client is in the Dockerfile) until our user can run a query.
-	until mariadb -h mariadb -u"${MYSQL_USER}" -p"${DB_PASSWORD}" \
-			-e "SELECT 1" >/dev/null 2>&1; do
-		sleep 1
-	done
+if ! wp core is-installed --allow-root; then
+	# Download WordPress core into the current dir (/var/www/html = the volume).
+	wp core download --force --allow-root
 
 	# Generate wp-config.php. dbhost is the mariadb service name, resolved by
 	# Docker's internal DNS on the bridge network.
-	wp config create \
+	wp config create --force \
 		--dbname="${MYSQL_DATABASE}" \
 		--dbuser="${MYSQL_USER}" \
 		--dbpass="${DB_PASSWORD}" \
@@ -52,6 +51,6 @@ if [ ! -f wp-config.php ]; then
 	chown -R www-data:www-data /var/www/html
 fi
 
-# Become php-fpm in the foreground: -F stops it daemonizing, so it stays PID 1
-# and receives Docker's SIGTERM directly. $PHP_VERSION comes from the Dockerfile's ENV.
+# Become php-fpm in the foreground: -F stops it daemonizing, so it stays PID 1 and receives Docker's SIGTERM directly.
+# $PHP_VERSION comes from the Dockerfile's ENV.
 exec php-fpm${PHP_VERSION} -F
