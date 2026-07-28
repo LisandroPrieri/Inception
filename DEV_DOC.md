@@ -19,7 +19,9 @@ How to set up, build, and operate the Inception stack from a clean machine. For 
    cp srcs/.env.example srcs/.env
    ```
 
-   It holds only *non-secret* configuration: `DOMAIN_NAME`, `MYSQL_DATABASE`, `MYSQL_USER`, WordPress usernames and emails. No passwords go in this file.
+   It holds only *non-secret* configuration: `DATA_DIR`, `DOMAIN_NAME`, `MYSQL_DATABASE`, `MYSQL_USER`, WordPress usernames and emails. No passwords go in this file.
+
+   `DATA_DIR` is the host directory where the volumes are stored, and both the Makefile and `docker-compose.yml` read it from here. On the evaluation VM it must be `/home/<login>/data` as the subject requires; set it to any writable path when developing on another machine.
 
 3. **Create the secret files**: a `secrets/` directory at the repo root, git-ignored, one password per file:
 
@@ -49,10 +51,10 @@ The Makefile wraps Docker Compose (project name `inception`, compose file `srcs/
 
 | Target | What it does |
 |---|---|
-| `make` / `make up` | create `/home/lprieri/data/{mariadb,wordpress}`, then `docker compose up --build -d` |
+| `make` / `make up` | create `$DATA_DIR/{mariadb,wordpress}`, then `docker compose up --build -d` |
 | `make down` | stop and remove containers and network; volumes and data survive |
 | `make logs` | `docker compose logs -f` |
-| `make fclean` | `down`, then `docker system prune -af` and delete `/home/lprieri/data` |
+| `make fclean` | `down` plus removal of this project's images and volumes, and delete `$DATA_DIR` |
 | `make re` | `fclean` followed by a full rebuild (a from-scratch first boot) |
 
 ## Managing containers and volumes
@@ -75,12 +77,12 @@ alias dc='docker compose -f srcs/docker-compose.yml -p inception'
 
 ## Where data lives and how it persists
 
-Two named volumes, declared in `docker-compose.yml`, their storage placed under `/home/lprieri/data/` on the host:
+Two named volumes, declared in `docker-compose.yml`, their storage placed under `$DATA_DIR` on the host (`/home/lprieri/data` on the VM):
 
 | Volume | Container path | Host path | Contents |
 |---|---|---|---|
-| `db_data` | `/var/lib/mysql` (mariadb) | `/home/lprieri/data/mariadb` | the database files |
-| `wp_data` | `/var/www/html` (wordpress + nginx) | `/home/lprieri/data/wordpress` | the WordPress site files |
+| `db_data` | `/var/lib/mysql` (mariadb) | `$DATA_DIR/mariadb` | the database files |
+| `wp_data` | `/var/www/html` (wordpress + nginx) | `$DATA_DIR/wordpress` | the WordPress site files |
 
 Persistence semantics:
 
