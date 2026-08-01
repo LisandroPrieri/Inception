@@ -1,5 +1,4 @@
 # Secrets
-srcs/.env
 secrets/
 
 # Bind-mount volume data (the actual database + site files)

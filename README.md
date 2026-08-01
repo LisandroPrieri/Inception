@@ -31,7 +31,7 @@ inception/
 ├── secrets/                      # passwords: git-ignored, mounted as Docker secrets
 └── srcs/
     ├── docker-compose.yml        # orchestration: services, network, volumes
-    ├── .env                      # non-secret config (never committed)
+    ├── .env                      # non-secret config: domain, db name, usernames
     └── requirements/
         ├── mariadb/
         │   ├── Dockerfile        # recipe to build the image
@@ -159,7 +159,7 @@ make re         # full rebuild from scratch
 
 The stack runs in an Ubuntu VM (VirtualBox).
 
-Secrets live in `srcs/.env`, injected into containers at runtime via `env_file`, never baked into images, never committed to git.
+Non-secret configuration lives in `srcs/.env` (domain, database name, usernames, emails) and is injected into containers at runtime via `env_file`. It is committed, because it holds no credential. The three passwords live in `secrets/`, which is git-ignored, and are mounted as Docker secrets at `/run/secrets/`. Neither kind of value is ever baked into an image.
 
 ## Resources
 

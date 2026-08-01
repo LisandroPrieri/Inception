@@ -13,15 +13,21 @@ How to set up, build, and operate the Inception stack from a clean machine. For 
 
 1. **Clone the repository** and `cd` into it.
 
-2. **Create the environment file** from the template and fill in real values:
+2. **Review `srcs/.env`.** It is committed with the repository, because it holds only
+   *non-secret* configuration: `DATA_DIR`, `DOMAIN_NAME`, `MYSQL_DATABASE`, `MYSQL_USER`,
+   and the WordPress usernames and emails. **No password ever goes in this file.**
+
+   `DATA_DIR` is the host directory where the volumes are stored, and both the Makefile
+   and `docker-compose.yml` read it from here. On the evaluation VM it must be
+   `/home/<login>/data` as the subject requires; set it to any writable path when
+   developing on another machine.
+
+   Confirm compose resolves it correctly before launching — an unset `DATA_DIR` silently
+   becomes an empty string, which puts the volumes at the filesystem root:
 
    ```
-   cp srcs/.env.example srcs/.env
+   docker compose -f srcs/docker-compose.yml -p inception config | grep device
    ```
-
-   It holds only *non-secret* configuration: `DATA_DIR`, `DOMAIN_NAME`, `MYSQL_DATABASE`, `MYSQL_USER`, WordPress usernames and emails. No passwords go in this file.
-
-   `DATA_DIR` is the host directory where the volumes are stored, and both the Makefile and `docker-compose.yml` read it from here. On the evaluation VM it must be `/home/<login>/data` as the subject requires; set it to any writable path when developing on another machine.
 
 3. **Create the secret files**: a `secrets/` directory at the repo root, git-ignored, one password per file:
 
