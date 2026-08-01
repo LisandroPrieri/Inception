@@ -28,12 +28,14 @@ ENTRYPOINT ["/usr/local/bin/init.sh"]
 ```
 
 - **`FROM debian:bookworm`**: pinned release, as the subject requires (penultimate stable; `latest` is forbidden because it makes builds non-reproducible).
-- **`RUN` chains update + install + cleanup in one instruction.** `&&` stops the build if any step fails. The cleanup (`rm -rf /var/lib/apt/lists/*`, apt's downloaded package indexes) must be in the *same* RUN: each RUN produces one immutable layer, and deleting files in a later layer only shadows them without reclaiming the space.
+- **`RUN` chains update + install + cleanup in one instruction.** `&&` stops the build if any step fails.
+
+    The cleanup (`rm -rf /var/lib/apt/lists/*`, apt's downloaded package indexes) must be in the *same* RUN: each RUN produces one immutable layer, and deleting files in a later layer only shadows them without reclaiming the space.
 - **`COPY`** is the only way project files enter the image; the container cannot see the repo at runtime.
 - **`EXPOSE 3306`** is documentation only. It does not publish anything: `ports:` in compose publishes; EXPOSE merely declares. MariaDB has no `ports:` entry, so it is reachable only on the internal network.
 - **`ENTRYPOINT`** attaches a note to the image: when a container starts, run this script. That process becomes PID 1.
-- **`COPY --chmod=755`** sets the executable bit in the same layer as the copy. A separate `RUN chmod +x` afterward would work too, but layers record metadata changes by copying the whole file up into a new layer; one instruction avoids the duplicate.
-- **`rm -rf /var/lib/mysql/*`** fixes a silent first-boot bug. The Debian package's post-install script runs `mysql_install_db` itself, so a stock build ships an already-populated data directory (`ibdata1`, `mysql/`, `sys/`, …) baked into the image. That matters because Docker **pre-populates an empty volume by copying whatever the image holds at that path**, so on a genuine first boot the fresh volume arrives already containing `mysql/`, the guard in `init.sh` concludes the database is initialised, and setup is skipped: no `wordpress` database, no WordPress user, no root password. Emptying the directory at build time makes "volume is empty" and "database not initialised" mean the same thing again. (Confirmed by mounting an empty bind-backed volume over a stock build: all ten files appeared before the entrypoint ran.)
+- **`COPY --chmod=755`** sets the executable bit in the same layer as the copy. A separate `RUN chmod +x` afterward would work too, but layers record metadata changes by copying the whole file up into a new layer. This way we avoid creating that copy.
+- **`rm -rf /var/lib/mysql/*`** fixes a silent first-boot bug. The Debian package's post-install script runs `mysql_install_db` itself, so a stock build ships an already-populated data directory (`ibdata1`, `mysql/`, `sys/`, …) baked into the image. That matters because Docker **pre-populates an empty volume by copying whatever the image holds at that path**, so on a genuine first boot the fresh volume arrives already containing `mysql/`, the guard in `init.sh` concludes the database is initialised, and setup is skipped: no `wordpress` database, no WordPress user, no root password. Emptying the directory at build time makes "volume is empty" and "database not initialised" mean the same thing again.
 
 ## conf/50-server.cnf
 
